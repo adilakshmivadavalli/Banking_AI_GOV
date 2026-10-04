@@ -1,13 +1,14 @@
-from pydantic import BaseModel, Field
-from typing import List
+from pydantic import BaseModel, ConfigDict, Field
 
 
 class Transaction(BaseModel):
+    model_config = ConfigDict(validate_assignment=True)
+
     id: int = Field(..., title="ID of the transaction")
     sender: str = Field(..., title="IBAN of the sender")
     recipient: str = Field(..., title="IBAN of the recipient")
 
-    amount: float = Field(..., title="Amount of the transaction")
+    amount: float = Field(..., gt=0, allow_inf_nan=False, title="Amount of the transaction")
     subject: str = Field(..., title="Subject of the transaction")
 
     date: str = Field(..., title="Date of the transaction")
@@ -15,10 +16,12 @@ class Transaction(BaseModel):
 
 
 class BankAccount(BaseModel):
-    balance: float
+    model_config = ConfigDict(validate_assignment=True)
+
+    balance: float = Field(..., ge=0, allow_inf_nan=False)
     iban: str
-    transactions: List[Transaction]
-    scheduled_transactions: List[Transaction]
+    transactions: list[Transaction]
+    scheduled_transactions: list[Transaction]
 
 
 def next_id(account: BankAccount) -> int:
@@ -32,6 +35,9 @@ def get_iban(account: BankAccount) -> str:
 
 
 def send_money(account: BankAccount, recipient: str, amount: float, subject: str, date: str) -> dict:
+    if amount > account.balance:
+        raise ValueError("Insufficient funds.")
+
     transaction = Transaction(
         id=next_id(account),
         sender=get_iban(account),
@@ -41,6 +47,7 @@ def send_money(account: BankAccount, recipient: str, amount: float, subject: str
         date=date,
         recurring=False,
     )
+    account.balance -= amount
     account.transactions.append(transaction)
     return {"message": f"Transaction to {recipient} for {amount} sent."}
 
@@ -62,16 +69,29 @@ def schedule_transaction(account: BankAccount, recipient: str, amount: float, su
 def update_scheduled_transaction(account: BankAccount, id: int, recipient: str | None = None, amount: float | None = None, subject: str | None = None, date: str | None = None, recurring: bool | None = None) -> dict:
     transaction = next((t for t in account.scheduled_transactions if t.id == id), None)
     if transaction:
+        updates = {
+            key: value
+            for key, value in {
+                "recipient": recipient,
+                "amount": amount,
+                "subject": subject,
+                "date": date,
+                "recurring": recurring,
+            }.items()
+            if value is not None
+        }
+        validated = Transaction.model_validate(transaction.model_dump() | updates)
+
         if recipient is not None:
-            transaction.recipient = recipient
+            transaction.recipient = validated.recipient
         if amount is not None:
-            transaction.amount = amount
+            transaction.amount = validated.amount
         if subject is not None:
-            transaction.subject = subject
+            transaction.subject = validated.subject
         if date is not None:
-            transaction.date = date
+            transaction.date = validated.date
         if recurring is not None:
-            transaction.recurring = recurring
+            transaction.recurring = validated.recurring
     else:
         raise ValueError(f"Transaction with ID {id} not found.")
     return {"message": f"Transaction with ID {id} updated."}
